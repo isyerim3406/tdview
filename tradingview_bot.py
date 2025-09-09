@@ -28,12 +28,12 @@ WINDOW_HEIGHT = 1080
 # Analiz edilecek alanın koordinatları (sol-x, üst-y, sağ-x, alt-y)
 # Bu koordinatları, belirlediğiniz sabit çözünürlüğe göre ayarlayın.
 # Örnek: (800, 500, 850, 550)
-signal_area_coords = (800, 500, 850, 550)
+signal_area_coords = (1771,126,1791,151)
 
 # Sinyal tespiti için referans renkler
 SIGNAL_COLORS = {
-    "ALIM SİNYALİ GELDİ!": (0, 255, 0),  # Yeşil
-    "SATIM SİNYALİ GELDİ!": (255, 0, 0)  # Kırmızı
+    "ALIM SİNYALİ GELDİ!": (76, 175, 80),  # Yeşil
+    "SATIM SİNYALİ GELDİ!": (255, 82, 82)  # Kırmızı
 }
 
 # Hata toleransı (ortalama renk analizi için)
@@ -158,3 +158,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
