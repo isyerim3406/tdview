@@ -2,7 +2,8 @@
   "name": "tradingview-bot",
   "version": "1.0.0",
   "scripts": {
-    "start": "node login.js"
+    "start": "node login.js",
+    "postinstall": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "puppeteer": "^23.3.0",
