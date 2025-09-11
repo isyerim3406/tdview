@@ -13,7 +13,8 @@ function sleep(ms) {
   let browser;
   try {
     browser = await puppeteer.launch({
-      headless: true, // Render'da headless true olmalı
+      headless: true, // Render'da headless zorunlu
+      executablePath: '/usr/bin/google-chrome', // Render sistem Chrome
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -122,8 +123,7 @@ function sleep(ms) {
   } catch (error) {
     console.error('İşlem sırasında bir hata oluştu:', error.message);
   } finally {
-    // Render'da genelde browser'ı açık bırakmak mantıklı olabilir,
-    // ama istersen kapatabilirsin:
+    // Render'da browser açık kalabilir, istersen kapat:
     // if (browser) await browser.close();
   }
 })();
