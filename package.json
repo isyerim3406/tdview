@@ -1,12 +1,11 @@
-
 {
   "name": "tradingview-screenshot",
   "version": "1.0.0",
   "type": "module",
-  "main": "server.js",
+  "main": "login.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
+    "start": "node login.js",
+    "dev": "node login.js",
     "screenshot": "node login.js"
   },
   "dependencies": {
