@@ -1,0 +1,12 @@
+{
+  "name": "tradingview-bot",
+  "version": "1.0.0",
+  "main": "login.js",
+  "scripts": {
+    "start": "node login.js"
+  },
+  "dependencies": {
+    "puppeteer": "^23.3.0",
+    "fs": "0.0.1-security"
+  }
+}
