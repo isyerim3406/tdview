@@ -1,153 +1,119 @@
+// login.js
+import 'dotenv/config'; // .env değişkenlerini yükler
 import puppeteer from 'puppeteer';
 import Jimp from 'jimp';
 import TelegramBot from 'node-telegram-bot-api';
-import dotenv from 'dotenv';
-
-dotenv.config();
 
 // --- Ortam değişkenleri ---
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const TRADINGVIEW_USERNAME = process.env.TRADINGVIEW_USERNAME;
-const TRADINGVIEW_PASSWORD = process.env.TRADINGVIEW_PASSWORD;
+const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
+const chatId = process.env.TELEGRAM_CHAT_ID;
+const tradingviewUsername = process.env.TRADINGVIEW_USERNAME;
+const tradingviewPassword = process.env.TRADINGVIEW_PASSWORD;
+const chartUrl = process.env.TRADINGVIEW_CHART_URL;
 
-// --- TradingView URL'leri ---
-const login_url = "https://tr.tradingview.com/#signin";
-const chart_url = "https://tr.tradingview.com/chart/?symbol=NASDAQ%3ATSLA";
+// Signal area koordinatlarını .env üzerinden al
+// Örnek: "1773,139,1795,164"
+const coordsEnv = process.env.SIGNAL_AREA_COORDS || "1773,139,1795,164";
+const signalAreaCoords = coordsEnv.split(',').map(Number);
 
-// --- Pencere boyutu ---
+// Sabit pencere boyutu
 const WINDOW_WIDTH = 1920;
 const WINDOW_HEIGHT = 1080;
 
-// --- Sinyal alanı koordinatları (sol-x, üst-y, sağ-x, alt-y) ---
-let signal_area_coords = { x1: 1773, y1: 139, x2: 1795, y2: 164 }; // burayı değiştir
-
-// --- Referans renkler ---
+// Sinyal renkleri
 const SIGNAL_COLORS = {
-    "ALIM SİNYALİ GELDİ!": { r: 76, g: 175, b: 80 },  // Yeşil
-    "SATIM SİNYALİ GELDİ!": { r: 255, g: 82, b: 82 }  // Kırmızı
+    "ALIM SİNYALİ GELDİ!": [76, 175, 80],  // Yeşil
+    "SATIM SİNYALİ GELDİ!": [255, 82, 82]  // Kırmızı
 };
 const COLOR_TOLERANCE = 20;
 
-// --- Telegram bot ---
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
+// Telegram bot
+const bot = new TelegramBot(telegramBotToken);
 
-// --- Chrome başlat ---
-async function getBrowser() {
-    return await puppeteer.launch({
-        headless: true,
-        executablePath: '/usr/bin/chromium-browser',
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-        defaultViewport: { width: WINDOW_WIDTH, height: WINDOW_HEIGHT }
-    });
-}
-
-// --- TradingView login ---
-async function loginToTradingView(page) {
+async function loginAndGoToChart(page) {
     console.log("TradingView'e giriş yapılıyor...");
-    await page.goto(login_url, { waitUntil: 'networkidle2', timeout: 120000 });
-
-    await page.waitForSelector('button:contains("Giriş Yap")', { timeout: 30000 });
-    const loginButton = await page.$x("//button[contains(text(), 'Giriş Yap')]");
-    if (loginButton.length) await loginButton[0].click();
+    await page.goto('https://tr.tradingview.com/#signin', { waitUntil: 'networkidle2', timeout: 60000 });
 
     await page.waitForTimeout(2000);
 
-    await page.type('#username', TRADINGVIEW_USERNAME, { delay: 50 });
-    await page.type('#password', TRADINGVIEW_PASSWORD, { delay: 50 });
+    try {
+        // Giriş butonları ve form alanları
+        const loginButton = await page.$x("//button[contains(text(), 'Giriş Yap')]");
+        if (loginButton.length > 0) await loginButton[0].click();
+        await page.waitForTimeout(2000);
 
-    const signinButton = await page.$x("//button[contains(text(), 'Giriş yap')]");
-    if (signinButton.length) await signinButton[0].click();
+        await page.type('#username', tradingviewUsername);
+        await page.type('#password', tradingviewPassword);
 
-    await page.waitForTimeout(10000); // girişin tamamlanması için bekle
-    console.log("Login tamamlandı.");
+        const signinButton = await page.$x("//button[contains(text(), 'Giriş yap')]");
+        if (signinButton.length > 0) await signinButton[0].click();
+
+        await page.waitForTimeout(10000); // Girişin tamamlanması için
+        console.log("Giriş başarılı.");
+
+        // Grafiğe git
+        await page.goto(chartUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        await page.waitForTimeout(15000); // Grafik yüklenmesi
+        console.log("Grafik yüklendi.");
+    } catch (err) {
+        console.error("Giriş veya grafik yükleme sırasında hata:", err);
+    }
 }
 
-// --- Ekran görüntüsü al ve kırp ---
-async function captureAndCrop(page) {
-    const screenshotBuffer = await page.screenshot();
-    const img = await Jimp.read(screenshotBuffer);
+async function takeAndAnalyzeScreenshot(page) {
+    const screenshotPath = 'tradingview_screenshot.png';
+    await page.screenshot({ path: screenshotPath });
 
-    const cropped = img.clone().crop(
-        signal_area_coords.x1,
-        signal_area_coords.y1,
-        signal_area_coords.x2 - signal_area_coords.x1,
-        signal_area_coords.y2 - signal_area_coords.y1
-    );
-    return cropped;
-}
+    const image = await Jimp.read(screenshotPath);
+    const cropped = image.clone().crop(signalAreaCoords[0], signalAreaCoords[1], 
+                                       signalAreaCoords[2] - signalAreaCoords[0],
+                                       signalAreaCoords[3] - signalAreaCoords[1]);
 
-// --- Ortalama renk hesapla ---
-function getAverageColor(img) {
+    // Ortalama renk
     let rSum = 0, gSum = 0, bSum = 0;
-    const w = img.bitmap.width;
-    const h = img.bitmap.height;
-
-    img.scan(0, 0, w, h, function(x, y, idx) {
+    cropped.scan(0, 0, cropped.bitmap.width, cropped.bitmap.height, function(x, y, idx) {
         rSum += this.bitmap.data[idx + 0];
         gSum += this.bitmap.data[idx + 1];
         bSum += this.bitmap.data[idx + 2];
     });
-
-    const totalPixels = w * h;
-    return {
-        r: Math.round(rSum / totalPixels),
-        g: Math.round(gSum / totalPixels),
-        b: Math.round(bSum / totalPixels)
-    };
+    const pixelCount = cropped.bitmap.width * cropped.bitmap.height;
+    const avgColor = [Math.round(rSum/pixelCount), Math.round(gSum/pixelCount), Math.round(bSum/pixelCount)];
+    return avgColor;
 }
 
-// --- Renk karşılaştır ---
-function matchColor(avgColor) {
+async function checkSignal(page) {
+    const avgColor = await takeAndAnalyzeScreenshot(page);
+    console.log("Tespit edilen ortalama renk:", avgColor);
+
     for (const [message, color] of Object.entries(SIGNAL_COLORS)) {
-        if (
-            Math.abs(avgColor.r - color.r) <= COLOR_TOLERANCE &&
-            Math.abs(avgColor.g - color.g) <= COLOR_TOLERANCE &&
-            Math.abs(avgColor.b - color.b) <= COLOR_TOLERANCE
-        ) {
-            return message;
+        if (Math.abs(avgColor[0] - color[0]) <= COLOR_TOLERANCE &&
+            Math.abs(avgColor[1] - color[1]) <= COLOR_TOLERANCE &&
+            Math.abs(avgColor[2] - color[2]) <= COLOR_TOLERANCE) {
+            console.log("Sinyal tespit edildi:", message);
+            await bot.sendMessage(chatId, `TradingView Sinyal:\n${message}`);
+            return;
         }
     }
-    return null;
+    console.log("Henüz bir sinyal tespit edilmedi.");
 }
 
-// --- Ana döngü ---
-async function main() {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-        console.error("Telegram bilgileri eksik!");
-        return;
-    }
+(async () => {
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        defaultViewport: { width: WINDOW_WIDTH, height: WINDOW_HEIGHT }
+    });
 
-    const browser = await getBrowser();
     const page = await browser.newPage();
+    await loginAndGoToChart(page);
 
-    try {
-        await loginToTradingView(page);
-
-        console.log(`Grafik sayfasına gidiliyor: ${chart_url}`);
-        await page.goto(chart_url, { waitUntil: 'networkidle2', timeout: 120000 });
-        await page.waitForTimeout(15000); // grafik yüklenmesi için bekle
-
-        while (true) {
-            const croppedImg = await captureAndCrop(page);
-            const avgColor = getAverageColor(croppedImg);
-            console.log("Tespit edilen ortalama renk:", avgColor);
-
-            const signal = matchColor(avgColor);
-            if (signal) {
-                console.log("Sinyal tespit edildi:", signal);
-                await bot.sendMessage(TELEGRAM_CHAT_ID, `TradingView Sinyal:\n${signal}`);
-            } else {
-                console.log("Henüz sinyal yok.");
-            }
-
-            await page.waitForTimeout(60000); // 60 saniye bekle
+    // Döngüyle her 60 saniyede kontrol
+    while (true) {
+        try {
+            await checkSignal(page);
+        } catch (err) {
+            console.error("Sinyal kontrol hatası:", err);
         }
-    } catch (err) {
-        console.error("Hata oluştu:", err);
-    } finally {
-        await browser.close();
+        await page.waitForTimeout(60000);
     }
-}
-
-main();
+})();
