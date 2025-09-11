@@ -1,94 +1,98 @@
 import 'dotenv/config';
 import puppeteer from 'puppeteer';
+import fs from 'fs';
 import fetch from 'node-fetch';
-import FormData from 'form-data';
+import express from 'express';
 
-// =========================================================================================
-// CONFIG
-// =========================================================================================
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const TRADINGVIEW_URL = process.env.TRADINGVIEW_URL;
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-// =========================================================================================
-// TELEGRAM
-// =========================================================================================
-async function sendTelegramMessage(text) {
-  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.warn("Telegram ayarları eksik!");
-    return;
-  }
-  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-  const payload = {
-    chat_id: TELEGRAM_CHAT_ID,
-    text,
-    parse_mode: "Markdown"
-  };
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+// Telegram helper
+async function sendTelegramMessage(text, photoPath) {
+    if (!process.env.TG_TOKEN || !process.env.TG_CHAT_ID) {
+        console.warn('Telegram token veya chat ID eksik.');
+        return;
+    }
+
+    // Text message
+    if (text) {
+        await fetch(`https://api.telegram.org/bot${process.env.TG_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: process.env.TG_CHAT_ID,
+                text,
+                parse_mode: 'Markdown'
+            })
+        });
+    }
+
+    // Photo upload
+    if (photoPath && fs.existsSync(photoPath)) {
+        const formData = new FormData();
+        formData.append('chat_id', process.env.TG_CHAT_ID);
+        formData.append('photo', fs.createReadStream(photoPath));
+        await fetch(`https://api.telegram.org/bot${process.env.TG_TOKEN}/sendPhoto`, {
+            method: 'POST',
+            body: formData
+        });
+    }
+}
+
+// Puppeteer login & screenshot
+async function loginAndScreenshot() {
+    const browser = await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        defaultViewport: { width: 1920, height: 1080 }
     });
-    if (!res.ok) {
-      console.error(`Telegram API error: ${res.status} ${res.statusText}`);
-    }
-  } catch (err) {
-    console.error("Telegram mesaj gönderme hatası:", err);
-  }
-}
 
-async function sendTelegramPhoto(buffer, caption = "") {
-  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
+    const page = await browser.newPage();
 
-  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendPhoto`;
-  const formData = new FormData();
-  formData.append("chat_id", TELEGRAM_CHAT_ID);
-  formData.append("caption", caption);
-  formData.append("photo", buffer, { filename: "screenshot.png" });
+    const url = process.env.TV_URL;
+    if (!url) throw new Error("TV_URL .env içinde eksik!");
 
-  try {
-    const res = await fetch(url, { method: "POST", body: formData });
-    if (!res.ok) {
-      console.error(`Telegram Photo API error: ${res.status} ${res.statusText}`);
-    }
-  } catch (err) {
-    console.error("Telegram fotoğraf gönderme hatası:", err);
-  }
-}
-
-// =========================================================================================
-// TRADINGVIEW SCREENSHOT
-// =========================================================================================
-async function takeScreenshot(page) {
-  return await page.screenshot({ fullPage: false });
-}
-
-// =========================================================================================
-// MAIN
-// =========================================================================================
-async function main() {
-  await sendTelegramMessage("✅ *TradingView Bot Başlatıldı!*\nHer 60 saniyede bir ekran görüntüsü gönderilecek.");
-
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
-  });
-
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 720 });
-  await page.goto(TRADINGVIEW_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
-
-  // Her 60 saniyede bir screenshot al ve Telegram’a gönder
-  setInterval(async () => {
     try {
-      const img = await takeScreenshot(page);
-      await sendTelegramPhoto(img, "📸 *Yeni Screenshot*");
-      console.log("Screenshot gönderildi.");
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 });
+
+        // Login adımları
+        const loginSelector = 'button[data-name="header-user-menu-sign-in"]';
+        await page.waitForSelector(loginSelector, { timeout: 10000 });
+        await page.click(loginSelector);
+
+        await page.waitForTimeout(1000);
+        await page.type('input[name="username"]', process.env.TV_EMAIL, { delay: 50 });
+        await page.type('input[name="password"]', process.env.TV_PASSWORD, { delay: 50 });
+
+        const submitButton = 'button[type="submit"]';
+        await page.click(submitButton);
+
+        // Giriş sonrası yükleme
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
+        await page.waitForTimeout(5000); // ekstra bekleme
+
+        // Screenshot
+        const screenshotPath = 'tv_screenshot.png';
+        await page.screenshot({ path: screenshotPath, fullPage: true });
+
+        await sendTelegramMessage("TradingView giriş başarılı. İşte güncel grafik:", screenshotPath);
+
+        await browser.close();
+        console.log('✅ Screenshot Telegram\'a gönderildi.');
     } catch (err) {
-      console.error("Screenshot hatası:", err);
+        console.error('❌ Hata oluştu:', err);
+        await sendTelegramMessage(`TradingView login veya screenshot sırasında hata oluştu: ${err.message}`);
+        await browser.close();
     }
-  }, 60_000);
 }
 
-main().catch(console.error);
+// Express server (Render için)
+app.get('/', (req, res) => {
+    res.send('Bot çalışıyor!');
+});
+
+app.listen(PORT, () => {
+    console.log(`Sunucu ${PORT} portunda çalışıyor`);
+    // Botu başlat
+    loginAndScreenshot();
+});
