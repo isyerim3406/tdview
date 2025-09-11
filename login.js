@@ -1,8 +1,12 @@
+import express from 'express';
 import puppeteer from 'puppeteer';
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import TelegramBot from 'node-telegram-bot-api';
+
+const app = express();
+const PORT = process.env.PORT || 10000;
 
 const TV_URL = 'https://www.tradingview.com/chart/';
 const USERNAME = process.env.TV_USER;
@@ -11,6 +15,8 @@ const TG_TOKEN = process.env.TG_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 
 const bot = TG_TOKEN && TG_CHAT_ID ? new TelegramBot(TG_TOKEN, { polling: false }) : null;
+
+let isRunning = false;
 
 async function sendTelegramMessage(message, screenshotPath) {
     if (!bot) return console.warn('Telegram ayarları eksik!');
@@ -28,6 +34,12 @@ async function sendTelegramMessage(message, screenshotPath) {
 }
 
 async function loginAndScreenshot() {
+    if (isRunning) {
+        console.log('Zaten bir işlem devam ediyor...');
+        return { success: false, message: 'Zaten bir işlem devam ediyor' };
+    }
+
+    isRunning = true;
     let browser;
     
     try {
@@ -43,204 +55,220 @@ async function loginAndScreenshot() {
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
-                '--start-maximized'
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process',
+                '--disable-features=VizDisplayCompositor'
             ],
-            defaultViewport: { width: 1920, height: 1080 }
+            defaultViewport: { width: 1366, height: 768 },
+            timeout: 60000
         });
 
         const page = await browser.newPage();
+        
+        // Daha agresif timeout ve retry stratejisi
+        page.setDefaultTimeout(30000);
+        page.setDefaultNavigationTimeout(45000);
         
         // User agent ayarla
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         
         console.log('TradingView\'e gidiliyor...');
-        await page.goto(TV_URL, { 
-            waitUntil: 'networkidle2', 
-            timeout: 90000 
-        });
-
-        // Sayfanın yüklenmesini bekle
-        await page.waitForTimeout(5000);
-
-        // Login formu kontrolü
-        try {
-            console.log('Login formu aranıyor...');
-            
-            // Farklı login selector'larını dene
-            const loginSelectors = [
-                "//span[contains(text(),'Log in') or contains(text(),'Sign in')]",
-                "[data-name='header-user-menu-button']",
-                ".tv-header__user-menu-button",
-                ".js-header-user-menu-button"
-            ];
-
-            let loginClicked = false;
-            
-            for (const selector of loginSelectors) {
-                try {
-                    if (selector.startsWith('//')) {
-                        // XPath selector
-                        const elements = await page.$x(selector);
-                        if (elements.length > 0) {
-                            console.log('Login butonu bulundu (XPath)');
-                            await elements[0].click();
-                            loginClicked = true;
-                            break;
-                        }
-                    } else {
-                        // CSS selector
-                        const element = await page.$(selector);
-                        if (element) {
-                            console.log('Login butonu bulundu (CSS)');
-                            await element.click();
-                            loginClicked = true;
-                            break;
-                        }
-                    }
-                } catch (err) {
-                    continue;
+        
+        // Retry mekanizması ile navigasyon
+        let navigationSuccess = false;
+        let lastError = null;
+        
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                console.log(`Navigasyon denemesi ${attempt}/3...`);
+                
+                await Promise.race([
+                    page.goto(TV_URL, { 
+                        waitUntil: 'domcontentloaded',
+                        timeout: 30000 
+                    }),
+                    new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Custom timeout')), 25000)
+                    )
+                ]);
+                
+                navigationSuccess = true;
+                console.log('Navigasyon başarılı');
+                break;
+                
+            } catch (error) {
+                lastError = error;
+                console.log(`Navigasyon denemesi ${attempt} başarısız: ${error.message}`);
+                
+                if (attempt < 3) {
+                    console.log('2 saniye bekleniyor...');
+                    await new Promise(resolve => setTimeout(resolve, 2000));
                 }
             }
-
-            if (loginClicked) {
-                console.log('Login formuna erişiliyor...');
-                await page.waitForTimeout(3000);
-
-                // Username ve password input'larını bekle
-                try {
-                    await page.waitForSelector('input[name="username"], input[type="email"], #id_username', { timeout: 15000 });
-                    
-                    const usernameSelector = await page.$('input[name="username"]') ? 'input[name="username"]' :
-                                           await page.$('input[type="email"]') ? 'input[type="email"]' :
-                                           '#id_username';
-                    
-                    const passwordSelector = await page.$('input[name="password"]') ? 'input[name="password"]' :
-                                           'input[type="password"]';
-
-                    console.log('Kullanıcı bilgileri giriliyor...');
-                    await page.type(usernameSelector, USERNAME, { delay: 100 });
-                    await page.type(passwordSelector, PASSWORD, { delay: 100 });
-
-                    await page.waitForTimeout(1000);
-
-                    // Submit butonu bul ve tıkla
-                    const submitSelectors = [
-                        'button[type="submit"]',
-                        '.tv-button--primary',
-                        '[data-name="sign-in-submit"]',
-                        'button:contains("Sign in")'
-                    ];
-
-                    let submitted = false;
-                    for (const selector of submitSelectors) {
-                        try {
-                            const submitBtn = await page.$(selector);
-                            if (submitBtn) {
-                                await submitBtn.click();
-                                submitted = true;
-                                break;
-                            }
-                        } catch (err) {
-                            continue;
-                        }
-                    }
-
-                    if (!submitted) {
-                        // Enter tuşuna bas
-                        await page.keyboard.press('Enter');
-                    }
-
-                    console.log('Login formu gönderildi, bekleniyor...');
-                    
-                    // Login başarı kontrolü
-                    await page.waitForTimeout(5000);
-                    
-                    // Başarı göstergelerini kontrol et
-                    const successSelectors = [
-                        '#header-user-menu-button',
-                        '[data-name="header-user-menu-button"]',
-                        '.tv-header__user-menu-button--logged-in'
-                    ];
-
-                    let loginSuccess = false;
-                    for (const selector of successSelectors) {
-                        try {
-                            await page.waitForSelector(selector, { timeout: 10000 });
-                            loginSuccess = true;
-                            break;
-                        } catch (err) {
-                            continue;
-                        }
-                    }
-
-                    if (loginSuccess) {
-                        console.log('Login başarılı!');
-                    } else {
-                        console.log('Login durumu belirsiz, devam ediliyor...');
-                    }
-
-                } catch (err) {
-                    console.log('Login formu bulunamadı veya doldurulurken hata:', err.message);
-                }
-            } else {
-                console.log('Login butonu bulunamadı veya zaten giriş yapılmış');
-            }
-
-        } catch (err) {
-            console.log('Login işlemi sırasında hata:', err.message);
         }
 
-        // Sayfanın tam yüklenmesini bekle
-        await page.waitForTimeout(10000);
+        if (!navigationSuccess) {
+            throw new Error(`Navigasyon başarısız: ${lastError?.message || 'Bilinmeyen hata'}`);
+        }
+
+        // Sayfa yüklenmesini bekle
+        await new Promise(resolve => setTimeout(resolve, 8000));
+        console.log('Sayfa yükleme bekleme tamamlandı');
+
+        // Basit login kontrolü (hata almadan devam et)
+        try {
+            console.log('Login durumu kontrol ediliyor...');
+            
+            const loginButton = await page.$x("//span[contains(text(),'Log in') or contains(text(),'Sign in')]");
+            if (loginButton.length > 0) {
+                console.log('Login gerekli, form doldurulmaya çalışılacak...');
+                
+                try {
+                    await loginButton[0].click();
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    
+                    // Username girme
+                    const usernameField = await page.$('input[name="username"], input[type="email"]');
+                    if (usernameField && USERNAME) {
+                        await usernameField.type(USERNAME, { delay: 100 });
+                        console.log('Username girildi');
+                    }
+                    
+                    // Password girme  
+                    const passwordField = await page.$('input[name="password"], input[type="password"]');
+                    if (passwordField && PASSWORD) {
+                        await passwordField.type(PASSWORD, { delay: 100 });
+                        console.log('Password girildi');
+                    }
+                    
+                    // Submit
+                    const submitBtn = await page.$('button[type="submit"]');
+                    if (submitBtn) {
+                        await submitBtn.click();
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        console.log('Login formu gönderildi');
+                    }
+                } catch (loginError) {
+                    console.log('Login işleminde sorun:', loginError.message);
+                    // Login hatası olsa bile screenshot almaya devam et
+                }
+            } else {
+                console.log('Login gerekli değil veya form bulunamadı');
+            }
+        } catch (loginCheckError) {
+            console.log('Login kontrol hatası (devam ediliyor):', loginCheckError.message);
+        }
+
+        // Final bekleme
+        await new Promise(resolve => setTimeout(resolve, 5000));
 
         // Screenshot al
-        const screenshotPath = path.join(process.cwd(), 'tv_screenshot.png');
+        const screenshotPath = path.join(process.cwd(), `tv_screenshot_${Date.now()}.png`);
         console.log('Screenshot alınıyor...');
         
         await page.screenshot({ 
             path: screenshotPath, 
             fullPage: false,
-            quality: 90,
+            quality: 85,
             type: 'png'
         });
 
         console.log('Screenshot alındı:', screenshotPath);
 
         // Dosya boyutunu kontrol et
-        const stats = fs.statSync(screenshotPath);
-        console.log(`Screenshot boyutu: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
-
-        await sendTelegramMessage('TradingView ekran görüntüsü:', screenshotPath);
+        if (fs.existsSync(screenshotPath)) {
+            const stats = fs.statSync(screenshotPath);
+            console.log(`Screenshot boyutu: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+            
+            await sendTelegramMessage('TradingView ekran görüntüsü alındı', screenshotPath);
+            
+            // Eski screenshot'ları temizle
+            setTimeout(() => {
+                try {
+                    fs.unlinkSync(screenshotPath);
+                } catch (e) {
+                    console.log('Screenshot temizleme hatası:', e.message);
+                }
+            }, 30000);
+            
+            return { success: true, message: 'Screenshot başarıyla alındı', path: screenshotPath };
+        } else {
+            throw new Error('Screenshot dosyası oluşturulamadı');
+        }
 
     } catch (error) {
         console.error('Ana hata:', error.message);
-        console.error('Stack:', error.stack);
         await sendTelegramMessage(`Hata oluştu: ${error.message}`);
+        return { success: false, message: error.message };
     } finally {
         if (browser) {
             console.log('Browser kapatılıyor...');
-            await browser.close();
+            try {
+                await browser.close();
+            } catch (e) {
+                console.log('Browser kapatma hatası:', e.message);
+            }
         }
+        isRunning = false;
     }
 }
 
-// Ana fonksiyon
-async function main() {
-    console.log('Script başlatıldı...');
-    console.log('Çevre değişkenleri kontrol ediliyor...');
+// Express routes
+app.use(express.json());
+
+app.get('/', (req, res) => {
+    res.json({ 
+        status: 'TradingView Screenshot Service Active',
+        isRunning,
+        endpoints: {
+            '/screenshot': 'POST - Take screenshot',
+            '/status': 'GET - Service status',
+            '/health': 'GET - Health check'
+        }
+    });
+});
+
+app.get('/health', (req, res) => {
+    res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+app.get('/status', (req, res) => {
+    res.json({ 
+        isRunning,
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.post('/screenshot', async (req, res) => {
+    try {
+        const result = await loginAndScreenshot();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// Otomatik screenshot (isteğe bağlı)
+app.post('/auto-screenshot', async (req, res) => {
+    const { interval = 3600000 } = req.body; // Default 1 saat
     
-    if (!USERNAME || !PASSWORD) {
-        console.error('TV_USER ve TV_PASS çevre değişkenleri gerekli!');
-        process.exit(1);
+    if (global.autoScreenshotInterval) {
+        clearInterval(global.autoScreenshotInterval);
     }
     
-    if (!TG_TOKEN || !TG_CHAT_ID) {
-        console.warn('Telegram ayarları eksik, mesaj gönderilmeyecek');
-    }
+    global.autoScreenshotInterval = setInterval(async () => {
+        console.log('Otomatik screenshot başlatılıyor...');
+        await loginAndScreenshot();
+    }, interval);
     
-    await loginAndScreenshot();
-    console.log('İşlem tamamlandı');
-}
+    res.json({ 
+        success: true, 
+        message: `Otomatik screenshot ${interval/1000/60} dakikada bir alınacak` 
+    });
+});
 
 // Hata yakalama
 process.on('unhandledRejection', (reason, promise) => {
@@ -249,8 +277,17 @@ process.on('unhandledRejection', (reason, promise) => {
 
 process.on('uncaughtException', (error) => {
     console.error('Uncaught Exception:', error);
-    process.exit(1);
 });
 
-// Çalıştır
-main().catch(console.error);
+// Server başlat
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Sunucu ${PORT} portunda çalışıyor`);
+    
+    // İlk screenshot'ı 10 saniye sonra al
+    setTimeout(async () => {
+        console.log('İlk screenshot alınıyor...');
+        await loginAndScreenshot();
+    }, 10000);
+});
+
+export default app;
