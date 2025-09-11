@@ -1,149 +1,137 @@
-// login.js
+import 'dotenv/config'; // .env dosyasındaki değişkenleri yükler
+import puppeteer from 'puppeteer-core';
+import Jimp from 'jimp';
+import TelegramBot from 'node-telegram-bot-api';
 
-// -------------------------------------
-// 1️⃣ ENVIRONMENT VARIABLES
-// -------------------------------------
-import 'dotenv/config'; // .env veya Render ENV'den değişkenleri alır
+// --- Ortam değişkenleri ---
+const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
+const chatId = process.env.TELEGRAM_CHAT_ID;
+const tradingviewUsername = process.env.TRADINGVIEW_USERNAME;
+const tradingviewPassword = process.env.TRADINGVIEW_PASSWORD;
+const chartUrl = process.env.TRADINGVIEW_CHART_URL; // Örn: "https://www.tradingview.com/chart/?symbol=BINANCE:ETHUSDT.P"
+const coords = process.env.SIGNAL_AREA_COORDS.split(',').map(Number); // "1773,139,1795,164" gibi
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const TRADINGVIEW_USERNAME = process.env.TRADINGVIEW_USERNAME;
-const TRADINGVIEW_PASSWORD = process.env.TRADINGVIEW_PASSWORD;
-const SIGNAL_AREA_COORDS = process.env.SIGNAL_AREA_COORDS
-  ? process.env.SIGNAL_AREA_COORDS.split(',').map(Number)
-  : [1773, 139, 1795, 164]; // default koordinatlar
-
-const CHART_URL = process.env.CHART_URL || 'https://www.tradingview.com/chart/?symbol=BINANCE:ETHUSDT.P';
-const WINDOW_WIDTH = 1920;
-const WINDOW_HEIGHT = 1080;
+// Renkler ve tolerans
+const SIGNAL_COLORS = {
+    "ALIM SİNYALİ GELDİ!": [76, 175, 80],   // yeşil
+    "SATIM SİNYALİ GELDİ!": [255, 82, 82]   // kırmızı
+};
 const COLOR_TOLERANCE = 20;
 
-// RGB renkler
-const SIGNAL_COLORS = {
-  "ALIM SİNYALİ GELDİ!": [76, 175, 80],  // yeşil
-  "SATIM SİNYALİ GELDİ!": [255, 82, 82]  // kırmızı
-};
+// --- Telegram bot ---
+const bot = new TelegramBot(telegramBotToken, { polling: false });
 
-// -------------------------------------
-// 2️⃣ IMPORTS
-// -------------------------------------
-import puppeteer from 'puppeteer';
-import TelegramBot from 'node-telegram-bot-api';
-import Jimp from 'jimp';
+// --- Puppeteer ayarları ---
+const WINDOW_WIDTH = 1920;
+const WINDOW_HEIGHT = 1080;
 
-// -------------------------------------
-// 3️⃣ FONKSİYONLAR
-// -------------------------------------
 async function getBrowser() {
-  return await puppeteer.launch({
-    headless: true,
-    args: [
-      `--window-size=${WINDOW_WIDTH},${WINDOW_HEIGHT}`,
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-    ]
-  });
+    return await puppeteer.launch({
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            `--window-size=${WINDOW_WIDTH},${WINDOW_HEIGHT}`
+        ]
+    });
 }
 
+// --- TradingView giriş ---
 async function loginToTradingView(page) {
-  if (!TRADINGVIEW_USERNAME || !TRADINGVIEW_PASSWORD) {
-    console.error("TradingView username veya password ayarlı değil!");
-    return false;
-  }
+    console.log("TradingView'e giriş yapılıyor...");
+    await page.goto('https://tr.tradingview.com/#signin', { waitUntil: 'networkidle2', timeout: 120000 });
 
-  console.log("TradingView'e giriş yapılıyor...");
-  await page.goto('https://tr.tradingview.com/#signin', { waitUntil: 'networkidle2', timeout: 60000 });
+    // Kullanıcı adı ve şifre
+    await page.type('input#username', tradingviewUsername, { delay: 50 });
+    await page.type('input#password', tradingviewPassword, { delay: 50 });
 
-  // Giriş formunu doldur
-  await page.type('#username', TRADINGVIEW_USERNAME);
-  await page.type('#password', TRADINGVIEW_PASSWORD);
-  await page.click("button[type='submit']");
+    // Giriş butonu
+    const signinButton = await page.$x("//button[contains(text(), 'Giriş yap')]");
+    if (signinButton.length) await signinButton[0].click();
 
-  await page.waitForTimeout(10000); // girişin tamamlanması
-  console.log("Login tamamlandı.");
-  return true;
+    // Girişin tamamlanması için bekle
+    await page.waitForTimeout(15000);
+    console.log("Giriş tamamlandı.");
 }
 
-async function takeAndCropScreenshot(page, path, coords) {
-  await page.screenshot({ path });
-  const img = await Jimp.read(path);
-  const cropped = img.crop(coords[0], coords[1], coords[2] - coords[0], coords[3] - coords[1]);
-  await cropped.writeAsync(path);
-  console.log(`Screenshot kırpıldı: ${path}`);
-  return cropped;
-}
+// --- Renk analizi ---
+async function analyzeScreenshot(screenshotBuffer) {
+    const image = await Jimp.read(screenshotBuffer);
+    let rSum = 0, gSum = 0, bSum = 0;
+    const w = image.bitmap.width;
+    const h = image.bitmap.height;
 
-function analyzePixelArea(img) {
-  const { data, bitmap } = img;
-  let r = 0, g = 0, b = 0, count = 0;
-
-  for (let y = 0; y < bitmap.height; y++) {
-    for (let x = 0; x < bitmap.width; x++) {
-      const idx = (bitmap.width * y + x) * 4;
-      r += data[idx];
-      g += data[idx + 1];
-      b += data[idx + 2];
-      count++;
+    for (let x = 0; x < w; x++) {
+        for (let y = 0; y < h; y++) {
+            const pixel = Jimp.intToRGBA(image.getPixelColor(x, y));
+            rSum += pixel.r;
+            gSum += pixel.g;
+            bSum += pixel.b;
+        }
     }
-  }
 
-  return [Math.round(r / count), Math.round(g / count), Math.round(b / count)];
+    const totalPixels = w * h;
+    return [Math.round(rSum / totalPixels), Math.round(gSum / totalPixels), Math.round(bSum / totalPixels)];
 }
 
-// -------------------------------------
-// 4️⃣ ANA FONKSİYON
-// -------------------------------------
+// --- Sinyal kontrol ---
+function detectSignal(avgColor) {
+    for (const [message, color] of Object.entries(SIGNAL_COLORS)) {
+        if (
+            Math.abs(avgColor[0] - color[0]) <= COLOR_TOLERANCE &&
+            Math.abs(avgColor[1] - color[1]) <= COLOR_TOLERANCE &&
+            Math.abs(avgColor[2] - color[2]) <= COLOR_TOLERANCE
+        ) {
+            return message;
+        }
+    }
+    return null;
+}
+
+// --- Ana döngü ---
 async function main() {
-  if (!TELEGRAM_BOT_TOKEN || !CHAT_ID) {
-    console.error("Telegram bilgileri eksik!");
-    return;
-  }
+    const browser = await getBrowser();
+    const page = await browser.newPage();
+    await page.setViewport({ width: WINDOW_WIDTH, height: WINDOW_HEIGHT });
 
-  const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
-  const browser = await getBrowser();
-  const page = await browser.newPage();
-  await page.setViewport({ width: WINDOW_WIDTH, height: WINDOW_HEIGHT });
+    try {
+        await loginToTradingView(page);
 
-  // Login
-  const loggedIn = await loginToTradingView(page);
-  if (!loggedIn) return;
+        // Grafiğe git
+        console.log(`Grafik sayfasına yönlendiriliyor: ${chartUrl}`);
+        await page.goto(chartUrl, { waitUntil: 'networkidle2', timeout: 120000 });
+        await page.waitForTimeout(5000);
 
-  // Grafik sayfasına git
-  console.log(`Grafik sayfasına gidiliyor: ${CHART_URL}`);
-  await page.goto(CHART_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-  await page.waitForTimeout(15000); // grafik yüklenmesi için
+        while (true) {
+            // Screenshot
+            const screenshotBuffer = await page.screenshot({
+                clip: {
+                    x: coords[0],
+                    y: coords[1],
+                    width: coords[2] - coords[0],
+                    height: coords[3] - coords[1]
+                }
+            });
 
-  // Döngü ile kontrol
-  while (true) {
-    const screenshotPath = 'signal.png';
-    const img = await takeAndCropScreenshot(page, screenshotPath, SIGNAL_AREA_COORDS);
-    const avgColor = analyzePixelArea(img);
-    console.log(`Tespit edilen renk: [${avgColor}]`);
+            const avgColor = await analyzeScreenshot(screenshotBuffer);
+            console.log("Ortalama renk:", avgColor);
 
-    let signalMessage = null;
-    for (let [msg, color] of Object.entries(SIGNAL_COLORS)) {
-      if (
-        Math.abs(avgColor[0] - color[0]) <= COLOR_TOLERANCE &&
-        Math.abs(avgColor[1] - color[1]) <= COLOR_TOLERANCE &&
-        Math.abs(avgColor[2] - color[2]) <= COLOR_TOLERANCE
-      ) {
-        signalMessage = msg;
-        break;
-      }
+            const signal = detectSignal(avgColor);
+            if (signal) {
+                console.log("Sinyal tespit edildi:", signal);
+                await bot.sendMessage(chatId, `TradingView Sinyal:\n${signal}`);
+            } else {
+                console.log("Henüz sinyal yok.");
+            }
+
+            // 60 saniye bekle
+            await page.waitForTimeout(60000);
+        }
+    } catch (err) {
+        console.error("Hata oluştu:", err);
+    } finally {
+        await browser.close();
     }
-
-    if (signalMessage) {
-      console.log(`Sinyal bulundu: ${signalMessage}`);
-      await bot.sendMessage(CHAT_ID, `TradingView Sinyal:\n${signalMessage}`);
-    } else {
-      console.log("Henüz sinyal yok.");
-    }
-
-    await page.waitForTimeout(60000); // 60 saniye bekle
-  }
 }
 
-// -------------------------------------
-// 5️⃣ ÇALIŞTIR
-// -------------------------------------
-main().catch(console.error);
+main();
