@@ -1,15 +1,12 @@
 {
   "name": "tdview-bot",
   "version": "1.0.0",
-  "description": "TradingView sinyal botu",
   "type": "module",
-  "main": "login.js",
-  "scripts": {
-    "start": "node login.js"
-  },
+  "scripts": { "start": "node login.js" },
   "dependencies": {
-    "puppeteer": "^23.1.1",
-    "jimp": "^0.22.10",
-    "node-telegram-bot-api": "^0.61.0"
+    "puppeteer": "^24.10.2",
+    "jimp": "^0.16.1",
+    "node-telegram-bot-api": "^0.61.0",
+    "dotenv": "^16.3.1"
   }
 }
