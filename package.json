@@ -1,13 +1,13 @@
 {
   "name": "tradingview-bot",
   "version": "1.0.0",
+  "description": "TradingView headless bot",
+  "main": "login.js",
   "scripts": {
-    "start": "node login.js",
-    "postinstall": "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false npx puppeteer install"
+    "start": "node login.js"
   },
   "dependencies": {
-    "puppeteer": "^23.3.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.1"
+    "puppeteer": "^24.10.2",
+    "express": "^4.18.2"
   }
 }
