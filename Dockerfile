@@ -1,38 +1,44 @@
-# 1. Node.js tabanlı image
+# Base image
 FROM node:22-slim
 
-# 2. Chromium ve Puppeteer için gerekli paketler
+# Çalışma dizini
+WORKDIR /usr/src/app
+
+# package.json ve package-lock.json kopyala
+COPY package*.json ./
+
+# Dependencies yükle
+RUN npm install
+
+# Projeyi kopyala
+COPY . .
+
+# Chromium download ve gerekli libs
 RUN apt-get update && apt-get install -y \
-    chromium \
+    wget \
+    gnupg \
+    ca-certificates \
     fonts-liberation \
-    libappindicator3-1 \
+    libnss3 \
+    libxss1 \
     libasound2 \
-    libatk-bridge2.0-0 \
     libatk1.0-0 \
+    libatk-bridge2.0-0 \
     libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libxkbcommon0 \
-    libx11-xcb1 \
     libxcomposite1 \
-    libxdamage1 \
     libxrandr2 \
-    xdg-utils \
+    libgbm1 \
+    libpango1.0-0 \
+    libpangocairo-1.0-0 \
+    libgtk-3-0 \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. Çalışma dizini
-WORKDIR /app
+# Puppeteer’in Chromium yolunu Render’da kullan
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
 
-# 4. Paket dosyalarını kopyala ve npm install
-COPY package*.json ./
-RUN npm install
+# 3000 portunu aç
+EXPOSE 3000
 
-# 5. Proje dosyalarını kopyala
-COPY . .
-
-# 6. Puppeteer Chromium’u indir
-RUN npx puppeteer install
-
-# 7. Uygulamayı başlat
+# Başlat
 CMD ["node", "login.js"]
